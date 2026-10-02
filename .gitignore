@@ -16,4 +16,8 @@ dist/
 # --- Temporäre Zwischendateien der Pipeline ---
 temp_extracted.md
 temp_cleaned.md
+*_artifacts/
 *.pdf
+
+# --- Antwort-Cache der DeepSeek-API ---
+.pdf_purifier_cache.json

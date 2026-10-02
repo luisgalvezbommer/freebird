@@ -44,6 +44,25 @@ def _get_int(name: str, default: int) -> int:
         ) from exc
 
 
+def _get_float(name: str, default: float) -> float:
+    """Liest eine Gleitkommazahl und fällt bei leerem Wert auf ``default`` zurück."""
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"Die Umgebungsvariable {name!r} muss eine Zahl sein, ist aber {raw!r}."
+        ) from exc
+
+
+def _get_choice(name: str, default: str, allowed: set[str]) -> str:
+    """Liest eine Auswahlvariable; unbekannte Werte fallen auf ``default`` zurück."""
+    value = _get(name, default).strip().lower()
+    return value if value in allowed else default
+
+
 def _resolve(root: Path, value: str) -> Path:
     """Macht einen Pfad absolut, relativ zur Projektwurzel."""
     path = Path(value).expanduser()
@@ -64,6 +83,9 @@ class Settings:
     max_paragraphs_per_chunk: int
     max_chars_per_chunk: int
     request_timeout: int
+    ocr: str
+    images_scale: float
+    max_workers: int
     pdf_engine: str
     project_root: Path
 
@@ -93,6 +115,9 @@ class Settings:
             max_paragraphs_per_chunk=_get_int("MAX_PARAGRAPHS_PER_CHUNK", 8),
             max_chars_per_chunk=_get_int("MAX_CHARS_PER_CHUNK", 4000),
             request_timeout=_get_int("REQUEST_TIMEOUT", 60),
+            ocr=_get_choice("OCR", "auto", {"auto", "on", "off"}),
+            images_scale=_get_float("IMAGES_SCALE", 1.0),
+            max_workers=_get_int("MAX_WORKERS", 4),
             pdf_engine=_get("PDF_ENGINE", "weasyprint"),
             project_root=root,
         )

@@ -10,14 +10,26 @@ from pdf_purifier.services.preflight import check_system_dependencies
 from pdf_purifier.services.rewriter import process_markdown_with_ai
 
 
-def run_pipeline(settings: Settings, *, keep_temp: bool = False) -> None:
+def run_pipeline(
+    settings: Settings,
+    *,
+    keep_temp: bool = False,
+    use_cache: bool = True,
+) -> None:
     """Führt den kompletten Ablauf aus: Prüfen -> Extrahieren -> Umschreiben -> PDF."""
     # Erst prüfen, ob alles da ist!
     check_system_dependencies(settings.pdf_engine)
 
     # Danach die Pipeline starten
-    artifacts_dir = convert_pdf_to_markdown(settings.input_pdf, settings.temp_md)
-    process_markdown_with_ai(settings.temp_md, settings.temp_clean_md, settings)
+    artifacts_dir = convert_pdf_to_markdown(
+        settings.input_pdf,
+        settings.temp_md,
+        ocr=settings.ocr,
+        images_scale=settings.images_scale,
+    )
+    process_markdown_with_ai(
+        settings.temp_md, settings.temp_clean_md, settings, use_cache=use_cache
+    )
     convert_markdown_to_pdf(settings.temp_clean_md, settings.output_pdf, settings.pdf_engine)
 
     if keep_temp:

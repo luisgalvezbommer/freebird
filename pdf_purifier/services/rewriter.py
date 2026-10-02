@@ -20,7 +20,10 @@ Jetzt gilt:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -196,12 +199,73 @@ def query_deepseek(text_chunk: str, settings: Settings) -> str:
     return response.json()["choices"][0]["message"]["content"].strip()
 
 
+def _cache_file(settings: Settings) -> Path:
+    """Pfad zum Antwort-Cache (macht Wiederholungsläufe kostenlos)."""
+    return Path(settings.project_root) / ".pdf_purifier_cache.json"
+
+
+def _load_cache(settings: Settings) -> dict[str, str]:
+    """Lädt bereits bezahlte API-Antworten."""
+    try:
+        data = json.loads(_cache_file(settings).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cache(settings: Settings, cache: dict[str, str]) -> None:
+    """Schreibt den Antwort-Cache zurück."""
+    try:
+        _cache_file(settings).write_text(
+            json.dumps(cache, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _cache_key(prompt_text: str, settings: Settings) -> str:
+    """Eindeutiger Schlüssel aus Modell + Prompt."""
+    payload = f"{settings.model_name}\x00{prompt_text}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _rewrite_chunk(
+    chunk: list[str],
+    settings: Settings,
+    cache: dict[str, str],
+    use_cache: bool,
+) -> tuple[str | None, str]:
+    """Maskiert, fragt die API und setzt die Marker zurück.
+
+    Gibt ``(text, "")`` bei Erfolg zurück, sonst ``(None, grund)``.
+    """
+    prompt_text, masked = mask_blocks(chunk)
+    key = _cache_key(prompt_text, settings)
+
+    answer = cache.get(key) if use_cache else None
+    if answer is None:
+        answer = query_deepseek(prompt_text, settings)  # kann RewritingError werfen
+        # Immer merken - auch bei --no-cache; das Flag steuert nur das Lesen.
+        cache[key] = answer
+
+    restored = unmask_blocks(answer, masked)
+    if restored is None:
+        return None, "Marker verändert"
+    return restored, ""
+
+
 def process_markdown_with_ai(
     input_md: str | Path,
     output_md: str | Path,
     settings: Settings,
+    *,
+    use_cache: bool = True,
 ) -> None:
-    """Verarbeitet das Markdown block- und strukturweise und schreibt das Ergebnis."""
+    """Verarbeitet das Markdown block- und strukturweise und schreibt das Ergebnis.
+
+    Die Chunks sind unabhängig voneinander und werden deshalb parallel an die
+    API geschickt - aus n Wartezeiten wird so eine.
+    """
     print("[2/4] Starte Text-Umschreibung mit DeepSeek API...")
 
     input_md = Path(input_md)
@@ -217,46 +281,71 @@ def process_markdown_with_ai(
     )
     total = len(chunks)
     protected = sum(1 for block in blocks if is_protected(block))
+    workers = max(1, min(settings.max_workers, total))
+
+    cache = _load_cache(settings) if use_cache else {}
+    cached = 0
+    if use_cache:
+        cached = sum(
+            1
+            for chunk in chunks
+            if _cache_key(mask_blocks(chunk)[0], settings) in cache
+        )
+
     print(
         f"-> {len(blocks)} Blöcke (davon {protected} geschützt) auf {total} Chunks "
-        "verteilt. Sende Daten an Cloud..."
+        f"verteilt, {workers} parallel"
+        + (f", {cached} aus dem Cache" if cached else "")
+        + "."
     )
 
-    output_md = Path(output_md)
-    output_md.write_text("", encoding="utf-8")
+    results: dict[int, str] = {}
+    problems: list[str] = []
+    fatal: RewritingError | None = None
 
-    unchanged = 0
-    for index, chunk in enumerate(chunks, 1):
-        print(f"   Verarbeite Häppchen {index}/{total}...", end="\r")
-        prompt_text, masked = mask_blocks(chunk)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_rewrite_chunk, chunk, settings, cache, use_cache): index
+            for index, chunk in enumerate(chunks)
+        }
+        finished = 0
+        for future in as_completed(futures):
+            index = futures[future]
+            finished += 1
+            print(f"   {finished}/{total} Chunks fertig...", end="\r")
+            try:
+                text, note = future.result()
+            except RewritingError as exc:
+                fatal = fatal or exc
+                text, note = None, str(exc)
+            except Exception as exc:  # noqa: BLE001 - Verbindungsfehler
+                text, note = None, str(exc)
 
-        result: str | None = None
-        try:
-            answer = query_deepseek(prompt_text, settings)
-            result = unmask_blocks(answer, masked)
-            if result is None:
-                print(
-                    f"\n[Warnung] Chunk {index}: KI hat Marker verändert - "
-                    "Originaltext wird übernommen."
-                )
-        except RewritingError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - Verbindungsfehler
-            print(f"\n[Warnung] Chunk {index}: {exc} - Originaltext wird übernommen.")
+            if text is None:
+                problems.append(f"Chunk {index + 1}: {note}")
+                results[index] = "\n\n".join(chunks[index])
+            else:
+                results[index] = text
 
-        if result is None:
-            unchanged += 1
-            result = "\n\n".join(chunk)
+    print(" " * 40, end="\r")
 
-        with output_md.open("a", encoding="utf-8") as handle:
-            handle.write(result + "\n\n")
-
-    if unchanged == total:
+    if fatal is not None:
+        raise fatal
+    if problems and len(problems) == total:
         raise RewritingError(
             "\n[Fehler] Kein einziger Chunk konnte umgeschrieben werden. Die Ausgabe wäre "
             "nur eine Kopie des Originals. Bitte DEEPSEEK_URL, API-Key und MODEL_NAME prüfen."
         )
-    if unchanged:
-        print(f"\n[Warnung] {unchanged} von {total} Chunks unverändert übernommen.")
+
+    # Immer speichern - auch bei --no-cache, damit der nächste Lauf davon profitiert.
+    _save_cache(settings, cache)
+
+    output_md = Path(output_md)
+    with output_md.open("w", encoding="utf-8") as handle:
+        for index in range(total):
+            handle.write(results[index] + "\n\n")
+
+    for problem in problems:
+        print(f"[Warnung] {problem} - Originaltext wird übernommen.")
 
     print(f"\n-> Umschreibung abgeschlossen. Bereinigtes Markdown in '{output_md}' gespeichert.")

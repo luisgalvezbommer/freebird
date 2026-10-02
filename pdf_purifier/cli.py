@@ -58,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Temporäre Markdown-Dateien nicht löschen",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Gespeicherte DeepSeek-Antworten ignorieren und neu anfragen",
+    )
     return parser
 
 
@@ -91,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = _apply_overrides(settings, args)
 
     try:
-        run_pipeline(settings, keep_temp=args.keep_temp)
+        run_pipeline(settings, keep_temp=args.keep_temp, use_cache=not args.no_cache)
     except _KNOWN_ERRORS as exc:
         print(str(exc))
         return 1

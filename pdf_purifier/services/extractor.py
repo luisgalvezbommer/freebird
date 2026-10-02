@@ -11,16 +11,59 @@ class ExtractionError(RuntimeError):
     """Wird ausgelöst, wenn Docling das PDF nicht konvertieren kann."""
 
 
+#: Ab so vielen Zeichen pro Seite gilt ein PDF als "hat einen Textlayer".
+_TEXT_LAYER_MIN_CHARS = 80
+
+
+def has_text_layer(pdf_path: str | Path) -> bool:
+    """Prüft, ob das PDF einen echten Textlayer hat.
+
+    OCR ist dann reine Verschwendung: auf einem Vektor-PDF findet sie nichts
+    ("text detection result is empty"), kostet aber das Laden von drei
+    neuronalen Netzen - gemessen rund 47 der 53 Sekunden Laufzeit.
+    """
+    try:
+        import pypdfium2 as pdfium
+
+        document = pdfium.PdfDocument(str(pdf_path))
+        pages = min(len(document), 3)
+        if pages == 0:
+            return False
+        characters = sum(
+            len(document[index].get_textpage().get_text_range()) for index in range(pages)
+        )
+        return characters / pages >= _TEXT_LAYER_MIN_CHARS
+    except Exception:  # noqa: BLE001 - im Zweifel lieber OCR nutzen
+        return False
+
+
+def _use_ocr(pdf_path: str | Path, setting: str) -> bool:
+    """Entscheidet anhand von ``OCR=auto|on|off``, ob OCR laufen soll."""
+    if setting == "on":
+        return True
+    if setting == "off":
+        return False
+    return not has_text_layer(pdf_path)
+
+
 def convert_pdf_to_markdown(
     pdf_path: str | Path,
     output_md_path: str | Path,
+    *,
+    ocr: str = "auto",
+    images_scale: float = 1.0,
 ) -> Path | None:
     """Extrahiert Text **und Bilder** aus ``pdf_path`` und schreibt Markdown.
 
     Gibt das Verzeichnis mit den extrahierten Bildern zurück (oder ``None``),
     damit die Pipeline es später wieder aufräumen kann.
     """
+    use_ocr = _use_ocr(pdf_path, ocr)
     print("[1/4] Extrahiere Layout, Text und Bilder aus PDF via Docling...")
+    print(
+        f"      OCR {'an' if use_ocr else 'aus'} (OCR={ocr}), "
+        f"Bildauflösung x{images_scale:g}"
+    )
 
     # Lazy import: Docling ist schwer und wird nur für diesen Schritt benötigt.
     from docling.datamodel.base_models import InputFormat
@@ -37,7 +80,9 @@ def convert_pdf_to_markdown(
         pipeline_options = PdfPipelineOptions()
         # Ohne diese Option schreibt Docling nur "<!-- image -->" statt der Bilder.
         pipeline_options.generate_picture_images = True
-        pipeline_options.images_scale = 2.0  # doppelte Auflösung für den Druck
+        pipeline_options.images_scale = images_scale
+        # OCR nur, wenn wirklich nötig - sonst kostet sie ~47 s für nichts.
+        pipeline_options.do_ocr = use_ocr
 
         converter = DocumentConverter(
             format_options={
