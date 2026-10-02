@@ -121,17 +121,17 @@ def _load_dictionary(paths: tuple[str, ...] = DICTIONARY_PATHS) -> frozenset[str
 
 
 def _looks_like_placeholder(text: str, match: re.Match[str]) -> bool:
-    """Unterscheidet ``g3C9`` von harmlosen Buchstabenfolgen wie ``gedacht``.
+    """Unterscheidet ``g3C9`` von harmlosen Buchstabenfolgen wie ``Ausgabe``.
 
-    ``gedacht`` besteht aus ``g`` + ``edac`` - alles Hex-Ziffern. Echte
-    Platzhalter enthalten dagegen mindestens eine Ziffer oder stehen am
-    Wortrand (freistehende Symbole).
+    Hex-Ziffern sind auch ``a``-``f``. In ``Ausgabe`` sieht ``g`` + ``abe``
+    deshalb wie ein Platzhalter aus - der Lauf enthält aber keine Ziffer.
+    Echte Glyph-IDs enthalten praktisch immer eine. Ohne Ziffer wird ein Lauf
+    nur akzeptiert, wenn er das ganze Token ausmacht (freistehendes Symbol).
     """
     digits = match.group(1)
     if any(char.isdigit() for char in digits):
         return True
-    following = text[match.end():match.end() + 1]
-    return not (following and following.isalpha())
+    return text.strip(_PUNCTUATION) == match.group(0)
 
 
 def collect_known_ids(text: str) -> set[str]:
@@ -143,6 +143,12 @@ def collect_known_ids(text: str) -> set[str]:
     known: set[str] = set()
     for match in _RUN.finditer(text):
         digits = match.group(1)
+        # Ohne Ziffer ist es keine Glyph-ID ("gabe" in "Ausgabe").
+        if not any(char.isdigit() for char in digits):
+            continue
+        # Eindeutig ist ein Lauf nur, wenn er auf einer Ziffer endet oder an
+        # einer Wortgrenze steht. "3C9e" in "Nikolausp3C9ege" ist es nicht -
+        # das "e" könnte zum Wort gehören (Nikolauspflege).
         following = text[match.end():match.end() + 1]
         if digits[-1].isdigit() or not (following and following.isalpha()):
             known.add(digits)

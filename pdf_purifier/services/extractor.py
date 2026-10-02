@@ -98,6 +98,7 @@ def convert_pdf_to_markdown(
     images_scale: float = 1.0,
     image_sanitize: str = "metadata",
     max_workers: int = 4,
+    page_range: tuple[int, int] | None = None,
 ) -> Path | None:
     """Extrahiert Text **und Bilder** aus ``pdf_path`` und schreibt Markdown.
 
@@ -109,6 +110,7 @@ def convert_pdf_to_markdown(
     print(
         f"      OCR {'an' if use_ocr else 'aus'} (OCR={ocr}), "
         f"Bildauflösung x{images_scale:g}"
+        + (f", Seiten {page_range[0]}-{page_range[1]}" if page_range else "")
     )
 
     # Lazy import: Docling ist schwer und wird nur für diesen Schritt benötigt.
@@ -135,7 +137,11 @@ def convert_pdf_to_markdown(
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
             }
         )
-        result = converter.convert(str(pdf_path))
+        # Nur einen Seitenblock lesen, wenn einer angegeben wurde.
+        convert_options: dict[str, object] = {}
+        if page_range is not None:
+            convert_options["page_range"] = page_range
+        result = converter.convert(str(pdf_path), **convert_options)
         result.document.save_as_markdown(
             output_md_path,
             artifacts_dir=artifacts_dir,

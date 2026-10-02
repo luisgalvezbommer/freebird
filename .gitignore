@@ -21,3 +21,6 @@ temp_cleaned.md
 
 # --- Antwort-Cache der DeepSeek-API ---
 .pdf_purifier_cache.json
+
+# --- Seitenblöcke für große PDFs (zugleich Fortschritt) ---
+.pdf_purifier_parts/

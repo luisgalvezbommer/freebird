@@ -87,6 +87,8 @@ class Settings:
     images_scale: float
     image_sanitize: str
     max_workers: int
+    pages_per_part: int
+    api_retries: int
     pdf_engine: str
     project_root: Path
 
@@ -122,6 +124,9 @@ class Settings:
                 "IMAGE_SANITIZE", "metadata", {"off", "metadata", "reencode"}
             ),
             max_workers=_get_int("MAX_WORKERS", 4),
+            # 0 = alles in einem Rutsch; 150 begrenzt den Speicherbedarf.
+            pages_per_part=_get_int("PAGES_PER_PART", 150),
+            api_retries=_get_int("API_RETRIES", 3),
             pdf_engine=_get("PDF_ENGINE", "weasyprint"),
             project_root=root,
         )

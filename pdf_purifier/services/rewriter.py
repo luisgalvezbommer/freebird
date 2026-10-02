@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -33,7 +34,15 @@ from pdf_purifier.prompts import SYSTEM_PROMPT
 
 
 class RewritingError(RuntimeError):
-    """Wird ausgelöst, wenn die Eingabe-Datei fehlt oder nicht lesbar ist."""
+    """Fataler Fehler - bricht den Lauf ab (z. B. falscher Key)."""
+
+
+class ChunkRewriteError(RuntimeError):
+    """Ein einzelner Chunk scheiterte; der Originaltext wird übernommen."""
+
+
+#: HTTP-Status, bei denen ein erneuter Versuch sinnvoll ist.
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 # --- Blöcke, die die KI niemals zu sehen bekommt ---------------------------
@@ -180,24 +189,40 @@ def query_deepseek(text_chunk: str, settings: Settings) -> str:
         "stream": False,
         "temperature": 0.3,  # niedrig halten, damit der Inhalt treu bleibt
     }
-    response = requests.post(
-        settings.deepseek_url,
-        headers=headers,
-        json=payload,
-        timeout=settings.request_timeout,
+    attempts = max(1, settings.api_retries)
+    last_error: object = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(
+                settings.deepseek_url,
+                headers=headers,
+                json=payload,
+                timeout=settings.request_timeout,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+        else:
+            if response.status_code in (401, 403, 404):
+                raise RewritingError(
+                    f"\n[Fehler] DeepSeek hat die Anfrage abgelehnt (HTTP {response.status_code}).\n"
+                    f"   Aufgerufene URL : {settings.deepseek_url}\n"
+                    f"   Modell          : {settings.model_name}\n"
+                    "   Prüfe DEEPSEEK_URL (vollständiger API-Endpunkt, z. B. "
+                    "https://api.deepseek.com/chat/completions), DEEPSEEK_API_KEY und MODEL_NAME."
+                )
+            if response.status_code not in _RETRY_STATUS:
+                response.raise_for_status()
+                return response.json()["choices"][0]["message"]["content"].strip()
+            last_error = f"HTTP {response.status_code}"
+
+        if attempt < attempts:
+            # 2, 4, 8 ... Sekunden, höchstens 10.
+            time.sleep(min(2**attempt, 10))
+
+    raise ChunkRewriteError(
+        f"nach {attempts} Versuchen fehlgeschlagen ({last_error})"
     )
-
-    if response.status_code in (401, 403, 404):
-        raise RewritingError(
-            f"\n[Fehler] DeepSeek hat die Anfrage abgelehnt (HTTP {response.status_code}).\n"
-            f"   Aufgerufene URL : {settings.deepseek_url}\n"
-            f"   Modell          : {settings.model_name}\n"
-            "   Prüfe DEEPSEEK_URL (vollständiger API-Endpunkt, z. B. "
-            "https://api.deepseek.com/chat/completions), DEEPSEEK_API_KEY und MODEL_NAME."
-        )
-
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
 
 
 def _cache_file(settings: Settings) -> Path:
