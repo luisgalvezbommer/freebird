@@ -10,6 +10,22 @@ class BuilderError(RuntimeError):
     """Wird ausgelöst, wenn Pandoc die PDF nicht erzeugen kann."""
 
 
+def _document_title(markdown_path: Path) -> str:
+    """Erste Überschrift des Dokuments als PDF-Titel.
+
+    Ein *leerer* Titel hilft nicht: Pandoc fällt dann auf den Dateinamen der
+    Zwischendatei zurück, und "temp_cleaned" landet als /Title im fertigen PDF.
+    """
+    try:
+        for line in markdown_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") and stripped.strip("# ").strip():
+                return stripped.lstrip("#").strip()
+    except OSError:
+        pass
+    return " "  # nie leer - sonst greift wieder der Dateiname
+
+
 def convert_markdown_to_pdf(
     input_md: str | Path,
     output_pdf_path: str | Path,
@@ -31,6 +47,10 @@ def convert_markdown_to_pdf(
         str(output_pdf_path),
         f"--pdf-engine={pdf_engine}",
         f"--resource-path={resource_path}",
+        # pagetitle statt title: setzt /Title im PDF, wird aber - anders als
+        # `title` - NICHT als Überschrift in den Dokumentkörper gedruckt.
+        "-V",
+        f"pagetitle={_document_title(input_md)}",
         "--standalone",
     ]
 

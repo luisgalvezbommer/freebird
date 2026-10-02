@@ -85,6 +85,7 @@ class Settings:
     request_timeout: int
     ocr: str
     images_scale: float
+    image_sanitize: str
     max_workers: int
     pdf_engine: str
     project_root: Path
@@ -116,7 +117,10 @@ class Settings:
             max_chars_per_chunk=_get_int("MAX_CHARS_PER_CHUNK", 4000),
             request_timeout=_get_int("REQUEST_TIMEOUT", 60),
             ocr=_get_choice("OCR", "auto", {"auto", "on", "off"}),
-            images_scale=_get_float("IMAGES_SCALE", 1.0),
+            images_scale=_get_float("IMAGES_SCALE", 3.0),
+            image_sanitize=_get_choice(
+                "IMAGE_SANITIZE", "metadata", {"off", "metadata", "reencode"}
+            ),
             max_workers=_get_int("MAX_WORKERS", 4),
             pdf_engine=_get("PDF_ENGINE", "weasyprint"),
             project_root=root,

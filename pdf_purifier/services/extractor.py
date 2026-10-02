@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pdf_purifier.services.images import sanitize_images
 from pdf_purifier.services.repair import repair_placeholders
 
 
@@ -46,12 +47,57 @@ def _use_ocr(pdf_path: str | Path, setting: str) -> bool:
     return not has_text_layer(pdf_path)
 
 
+def _bbox_width_mm(picture: object) -> float | None:
+    """Breite des Bildes im Original-PDF, in Millimetern."""
+    try:
+        bbox = picture.prov[0].bbox  # type: ignore[attr-defined]
+        width_pt = getattr(bbox, "width", None)
+        if width_pt is None:
+            width_pt = abs(bbox.r - bbox.l)
+        return round(float(width_pt) / 72 * 25.4, 1)
+    except Exception:  # noqa: BLE001 - ohne Größe wird eben nicht skaliert
+        return None
+
+
+def _annotate_image_sizes(document: object, markdown: str) -> tuple[str, int]:
+    """Hängt jedem Bild seine Originalbreite an (``{width=63.5mm}``).
+
+    Docling schreibt nur den Dateinamen. Ohne Größenangabe platziert WeasyPrint
+    das Bild nach seiner Pixelzahl - dabei schrumpfte das Foto von 500x750 auf
+    136x128 Pixel. Die Bounding-Box aus dem Original stellt die ursprüngliche
+    Darstellungsgröße wieder her.
+
+    Gibt den neuen Markdown-Text und die Anzahl der ergänzten Größen zurück.
+    """
+    try:
+        pictures = list(document.pictures)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return markdown, 0
+    if not pictures:
+        return markdown, 0
+
+    annotated: list[str] = []
+    index = 0
+    count = 0
+    for line in markdown.split("\n"):
+        if index < len(pictures) and line.lstrip().startswith("![") and "{" not in line:
+            width_mm = _bbox_width_mm(pictures[index])
+            index += 1
+            if width_mm:
+                line = f"{line.rstrip()}{{width={width_mm}mm}}"
+                count += 1
+        annotated.append(line)
+    return "\n".join(annotated), count
+
+
 def convert_pdf_to_markdown(
     pdf_path: str | Path,
     output_md_path: str | Path,
     *,
     ocr: str = "auto",
     images_scale: float = 1.0,
+    image_sanitize: str = "metadata",
+    max_workers: int = 4,
 ) -> Path | None:
     """Extrahiert Text **und Bilder** aus ``pdf_path`` und schreibt Markdown.
 
@@ -99,9 +145,22 @@ def convert_pdf_to_markdown(
     except Exception as exc:  # noqa: BLE001 - Original: klare Meldung + Abbruch
         raise ExtractionError(f"CRITICAL ERROR in Schritt 1: {exc}") from exc
 
+    markdown = output_md_path.read_text(encoding="utf-8")
+
+    # Bilder bereinigen (Metadaten weg, optional neu kodieren) - parallel.
+    renames = sanitize_images(artifacts_dir, mode=image_sanitize, workers=max_workers)
+    for old_name, new_name in renames.items():
+        markdown = markdown.replace(old_name, new_name)
+
+    # Bildgrößen aus dem Original übernehmen - sonst platziert WeasyPrint sie
+    # nach Pixelzahl und das Foto schrumpft.
+    markdown, sized = _annotate_image_sizes(result.document, markdown)
+    if sized:
+        print(f"-> {sized} Bild(er) auf Originalgröße gesetzt.")
+
     # Ligaturen/Emoji ohne ToUnicode-Eintrag reparieren, solange der Text noch
     # sauber getrennt vorliegt - also VOR der KI.
-    repaired, report = repair_placeholders(output_md_path.read_text(encoding="utf-8"))
+    repaired, report = repair_placeholders(markdown)
     output_md_path.write_text(repaired, encoding="utf-8")
     report.print_summary()
 
