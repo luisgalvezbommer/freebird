@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-purifier"
+version = "0.1.0"
+description = "KI-gestützte PDF-Bereinigung: Docling -> DeepSeek -> Pandoc"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "docling>=2.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+pdf-purifier = "pdf_purifier.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pdf_purifier*"]
