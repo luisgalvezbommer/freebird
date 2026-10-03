@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pdf_purifier.services.images import sanitize_images
+from pdf_purifier.services.redact import print_report, redact_personal_data
 from pdf_purifier.services.repair import repair_placeholders
 
 
@@ -152,6 +153,12 @@ def convert_pdf_to_markdown(
         raise ExtractionError(f"CRITICAL ERROR in Schritt 1: {exc}") from exc
 
     markdown = output_md_path.read_text(encoding="utf-8")
+
+    # Personalisierte Kennzeichnungen (Exemplarnummer, Name, E-Mail) entfernen -
+    # zwingend VOR der KI, sonst schützt der Prompt sie als Eigennamen.
+    redaction = redact_personal_data(markdown)
+    markdown = redaction.text
+    print_report(redaction)
 
     # Bilder bereinigen (Metadaten weg, optional neu kodieren) - parallel.
     renames = sanitize_images(artifacts_dir, mode=image_sanitize, workers=max_workers)
